@@ -47,7 +47,7 @@ fi
 iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 
-# Remove UFW rules
+# Remove UFW rules - perbaikan untuk range port
 ufw delete allow 3000:19999/udp 2>/dev/null || true
 ufw delete allow 5667/udp 2>/dev/null || true
 ufw delete allow 6000:19999/udp 2>/dev/null || true
@@ -158,10 +158,8 @@ fi
 # ==================== CONFIGURE UFW ====================
 echo "[10/16] Configuring UFW firewall..."
 
-# Enable UFW if not already enabled
-if ! ufw status | grep -q "Status: active"; then
-    echo "y" | ufw enable
-fi
+# Reset UFW to default
+echo "y" | ufw reset
 
 # Set default policies
 ufw default deny incoming
@@ -173,16 +171,22 @@ ufw allow 22/tcp comment 'SSH'
 # Allow Hysteria port
 ufw allow $HY_PORT/udp comment 'Hysteria main port'
 
-# Allow port hopping range (3000-19999)
+# Allow port hopping range - PERBAIKAN: gunakan format port:port
 ufw allow 3000:19999/udp comment 'Hysteria port hopping'
 
-# Reload UFW
-ufw reload
+# Enable UFW (non-interactive)
+echo "y" | ufw enable
+
+# Show UFW status
+ufw status verbose
 
 echo "UFW configured successfully."
 
 # ==================== CONFIGURE IPTABLES DNAT ====================
 echo "[11/16] Configuring iptables DNAT for port hopping..."
+
+# Hapus rule lama jika ada
+iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT 2>/dev/null || true
 
 # Add DNAT rule for port hopping range (3000-19999 ke port Hysteria)
 iptables -t nat -A PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT
@@ -235,7 +239,7 @@ fi
 read -p "Enter domain name (optional, press Enter to use IP $PUBLIC_IP): " DOMAIN
 SERVER_ADDR=${DOMAIN:-$PUBLIC_IP}
 
-# URL encode password for URI
+# Simple URL encode for special characters
 OBFS_PASS_ENCODED=$(printf "%s" "$OBFS_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
 AUTH_PASS_ENCODED=$(printf "%s" "$AUTH_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
 
@@ -249,10 +253,13 @@ echo "Client URI generated."
 echo "[15/16] Making iptables rules persistent..."
 
 # Install iptables-persistent without prompt
+debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v4 boolean true"
+debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v6 boolean true"
 apt install -y iptables-persistent netfilter-persistent
 
 # Save iptables rules
 netfilter-persistent save
+iptables-save > /etc/iptables/rules.v4
 
 echo "iptables rules saved."
 
@@ -275,7 +282,7 @@ echo ""
 echo "Firewall Status:"
 echo "  UFW: active"
 echo "  UFW rules:"
-ufw status numbered | grep -E "$HY_PORT|3000-19999|22" | sed 's/^/    /'
+ufw status numbered | grep -E "$HY_PORT|3000:19999|22" | head -3 | sed 's/^/    /'
 echo ""
 echo "Port Hopping DNAT Rule:"
 echo "  iptables -t nat -A PREROUTING -i $INTERFACE -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT"
