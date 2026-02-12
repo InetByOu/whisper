@@ -1,53 +1,51 @@
 #!/bin/bash
-# update-hysteria2.sh - Hysteria 2 full overwrite updater & fixer
-# Selalu ganti file lama dengan yang baru (binary, cert, config, service)
-# Professional style: jeda tepat, error handling, clean output
+# update-hysteria2.sh - Hysteria 2 updater profesional (overwrite full + fix backtick)
+# Selalu ganti file lama dengan baru, tanpa backtick di default password
 
 set -e
 
-echo "Starting Hysteria 2 full update (overwrite mode)..."
+echo "Mulai update Hysteria 2 (mode overwrite total)..."
 
 # 1. Update sistem
-echo "[1/10] Updating system packages..."
+echo "[1/11] Update paket sistem..."
 sudo apt-get update -y >/dev/null 2>&1
 sudo apt-get upgrade -y >/dev/null 2>&1
-echo "System updated."
+echo "Sistem sudah update."
 
-sleep 1  # jeda kecil agar output tidak bertabrakan
+sleep 1
 
-# 2. Stop & disable service lama
-echo "[2/10] Stopping existing Hysteria service..."
+# 2. Stop & hapus service lama
+echo "[2/11] Stop dan hapus service lama..."
 systemctl stop hysteria-server >/dev/null 2>&1 || true
 systemctl disable hysteria-server >/dev/null 2>&1 || true
 
 # 3. Hapus semua file lama
-echo "[3/10] Removing old files..."
+echo "[3/11] Hapus file lama..."
 rm -f /usr/local/bin/hysteria
 rm -rf /etc/hysteria
 rm -f /etc/systemd/system/hysteria-server.service
 
-# Flush rules firewall lama
 nft flush ruleset >/dev/null 2>&1 || true
 iptables -t nat -F >/dev/null 2>&1 || true
 
-echo "Old files removed."
+echo "File lama dihapus."
 
 sleep 1
 
-# 4. Download binary Hysteria 2 terbaru
-echo "[4/10] Downloading latest Hysteria 2 binary..."
+# 4. Download binary terbaru
+echo "[4/11] Download Hysteria 2 versi terbaru..."
 wget -q --show-progress https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -O /usr/local/bin/hysteria
 chmod +x /usr/local/bin/hysteria
 
-echo "Binary updated."
+echo "Binary di-update."
 
-sleep 2  # jeda setelah download besar
+sleep 2
 
-# 5. Buat folder config baru
+# 5. Buat folder config
 mkdir -p /etc/hysteria
 
-# 6. Generate certificate baru (overwrite)
-echo "[5/10] Generating new self-signed certificate..."
+# 6. Generate cert baru
+echo "[5/11] Generate sertifikat self-signed baru..."
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout /etc/hysteria/server.key \
     -out /etc/hysteria/server.crt \
@@ -57,32 +55,32 @@ chmod 644 /etc/hysteria/server.crt
 chmod 644 /etc/hysteria/server.key
 chown root:root /etc/hysteria/*
 
-echo "New certificate generated."
+echo "Sertifikat baru selesai."
 
 sleep 2
 
-# 7. Prompt konfigurasi (aman, tanpa backtick di default)
-echo "[6/10] Hysteria 2 Configuration"
+# 7. Prompt konfigurasi (password obfs tanpa backtick)
+echo "[6/11] Konfigurasi Hysteria 2"
 DEFAULT_AUTH="gstgg47e"
-DEFAULT_OBFS="huhqb_c"   # diubah dari backtick agar aman di Bash
+DEFAULT_OBFS="huhqb_c"     # aman, tanpa backtick
 DEFAULT_BW="100"
 
-read -p "Auth password [default: $DEFAULT_AUTH]: " AUTH_PASS
+read -p "Password auth [default: $DEFAULT_AUTH]: " AUTH_PASS
 AUTH_PASS=${AUTH_PASS:-$DEFAULT_AUTH}
 
-read -p "Obfs salamander password [default: $DEFAULT_OBFS]: " OBFS_PASS
+read -p "Password obfs salamander [default: $DEFAULT_OBFS]: " OBFS_PASS
 OBFS_PASS=${OBFS_PASS:-$DEFAULT_OBFS}
 
 read -p "Bandwidth up/down Mbps [default: $DEFAULT_BW]: " BANDWIDTH
 BANDWIDTH=${BANDWIDTH:-$DEFAULT_BW}
 
-echo "Configuration received."
+echo "Konfigurasi diterima."
 
 sleep 1
 
-# 8. Buat config.yaml baru (overwrite)
-echo "[7/10] Creating new config.yaml..."
-cat > /etc/hysteria/config.yaml <<EOF
+# 8. Buat config.yaml baru
+echo "[7/11] Buat config.yaml baru..."
+cat > /etc/hysteria/config.yaml <<'EOF'
 listen: :5667
 
 tls:
@@ -91,16 +89,16 @@ tls:
 
 auth:
   type: password
-  password: $AUTH_PASS
+  password: '"$AUTH_PASS"'
 
 bandwidth:
-  up: ${BANDWIDTH} mbps
-  down: ${BANDWIDTH} mbps
+  up: '"${BANDWIDTH}"' mbps
+  down: '"${BANDWIDTH}"' mbps
 
 obfs:
   type: salamander
   salamander:
-    password: "$OBFS_PASS"
+    password: '"$OBFS_PASS"'
 
 masquerade:
   type: proxy
@@ -112,12 +110,12 @@ log:
   level: info
 EOF
 
-echo "Config created."
+echo "Config.yaml baru dibuat."
 
 sleep 1
 
-# 9. Buat systemd service baru (overwrite)
-echo "[8/10] Creating new systemd service..."
+# 9. Buat service file baru
+echo "[8/11] Buat file systemd service baru..."
 cat <<EOF > /etc/systemd/system/hysteria-server.service
 [Unit]
 Description=Hysteria 2 Server
@@ -142,15 +140,15 @@ EOF
 setcap cap_net_bind_service=+ep /usr/local/bin/hysteria >/dev/null 2>&1 || true
 systemctl daemon-reload
 
-# 11. Start & enable service
-echo "[9/10] Starting Hysteria 2 service..."
+# 11. Start service
+echo "[9/11] Start ulang service..."
 systemctl enable hysteria-server >/dev/null 2>&1
 systemctl restart hysteria-server
 
-sleep 5   # jeda penting agar service benar-benar start
+sleep 8   # jeda lebih panjang untuk memastikan start
 
-# 12. Re-apply DNAT & firewall
-echo "[10/10] Applying DNAT & firewall rules..."
+# 12. Apply firewall & DNAT
+echo "[10/11] Apply firewall & DNAT hopping..."
 IFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
 [ -z "$IFACE" ] && IFACE="eth0"
 
@@ -161,23 +159,26 @@ ufw allow 5667/udp >/dev/null 2>&1 || true
 ufw allow 3000:19999/udp >/dev/null 2>&1 || true
 ufw reload >/dev/null 2>&1 || true
 
-# 13. Cek hasil
-echo ""
-echo "=== Hysteria 2 update completed ==="
+# 13. Verifikasi
+echo "[11/11] Verifikasi akhir..."
+sleep 2
+
+echo "=== Status service ==="
 systemctl status hysteria-server -l
 
 echo ""
-echo "Last 20 log lines:"
+echo "=== Log terakhir (20 baris) ==="
 journalctl -u hysteria-server -n 20 --no-pager
 
 echo ""
-echo "Server IP: $(curl -s ifconfig.me)"
-echo "Internal port: 5667"
-echo "Hopping range: 3000-19999"
+echo "Update selesai! Jika service active (running), server sudah OK."
+echo "IP server: $(curl -s ifconfig.me)"
+echo "Port internal: 5667"
+echo "Range hopping: 3000-19999"
 echo "Auth: $AUTH_PASS"
 echo "Obfs: $OBFS_PASS"
 echo ""
-echo "URI hopping example:"
+echo "URI contoh hopping:"
 echo "hysteria2://\( AUTH_PASS@ \)(curl -s ifconfig.me):3000-19999/?obfs=salamander&obfs-password=$OBFS_PASS&sni=graph.facebook.com&insecure=1"
 echo ""
-echo "Done! If service still failed, paste the status output above."
+echo "Jika masih error, paste output status & log di atas."
