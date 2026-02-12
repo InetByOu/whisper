@@ -1,61 +1,55 @@
 #!/bin/bash
 # =============================================================================
 # worryfree.sh - Hysteria 2 Installer Compatible Ubuntu 24.04 (nftables)
-# Versi perbaikan: membersihkan instalasi lama + syntax bersih
+# Versi tanpa warna, syntax bersih, cleanup instalasi lama
 # Auth password OPSIONAL - default gstgg47e jika Enter kosong
-# Support: Ubuntu 24.04 LTS (Noble) - Jalankan sebagai root
+# Support: Ubuntu 24.04 LTS - Jalankan sebagai root
 # =============================================================================
 
 set -e
 
-# Warna output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+echo "=== worryfree.sh - Instalasi Hysteria 2 dimulai (Ubuntu 24.04 compatible) ==="
+echo "Membersihkan instalasi lama terlebih dahulu..."
 
-echo -e "\( {GREEN}=== worryfree.sh - Instalasi Hysteria 2 dimulai (Ubuntu 24.04 compatible) === \){NC}"
-echo -e "\( {YELLOW}Membersihkan instalasi lama terlebih dahulu... \){NC}"
-
-# 0. Cleanup instalasi sebelumnya
+# Cleanup instalasi sebelumnya
 systemctl stop hysteria-server 2>/dev/null || true
 systemctl disable hysteria-server 2>/dev/null || true
 
 rm -f /etc/hysteria/config.yaml
 rm -rf /etc/hysteria/*.crt /etc/hysteria/*.key
-rm -f /usr/local/bin/hysteria  # binary lama jika ada
+rm -f /usr/local/bin/hysteria
 rm -f /etc/systemd/system/hysteria-server.service
 rm -f /etc/nftables.conf
 
 nft flush ruleset 2>/dev/null || true
 systemctl restart nftables 2>/dev/null || true
 
-echo -e "\( {GREEN}Cleanup selesai. Melanjutkan instalasi baru... \){NC}"
+echo "Cleanup selesai. Melanjutkan instalasi baru..."
 
-# 1. Cek OS
+# Cek OS
 if ! grep -qiE 'ubuntu|debian' /etc/os-release; then
-    echo -e "\( {RED}Script ini utama untuk Ubuntu/Debian. Keluar. \){NC}"
+    echo "Script ini utama untuk Ubuntu/Debian. Keluar."
     exit 1
 fi
 
-# 2. Auto update & upgrade + install dependencies
-echo -e "\( {YELLOW}Auto update & upgrade paket sistem... \){NC}"
+# Auto update & upgrade + install deps
+echo "Auto update & upgrade paket sistem..."
 apt update -y && apt upgrade -y && apt autoremove -y
 
-echo -e "\( {YELLOW}Install dependencies otomatis (nftables + tools)... \){NC}"
+echo "Install dependencies otomatis (nftables + tools)..."
 apt install -y curl wget openssl nftables jq net-tools ca-certificates
 
-# 3. Install Hysteria 2 (script resmi akan reinstall jika sudah ada)
-echo -e "\( {YELLOW}Install/Upgrade Hysteria 2 official... \){NC}"
+# Install Hysteria 2
+echo "Install/Upgrade Hysteria 2 official..."
 bash <(curl -fsSL https://get.hy2.sh/)
 
 if ! command -v hysteria &> /dev/null; then
-    echo -e "\( {RED}Gagal install Hysteria. Cek koneksi internet. \){NC}"
+    echo "Gagal install Hysteria. Cek koneksi internet."
     exit 1
 fi
 
-# 4. Prompt konfigurasi
-echo -e "\( {YELLOW}Masukkan konfigurasi (tekan Enter untuk default): \){NC}"
+# Prompt konfigurasi
+echo "Masukkan konfigurasi (tekan Enter untuk default):"
 
 read -p "Port listen Hysteria (default: 5667): " HY_PORT
 HY_PORT=${HY_PORT:-5667}
@@ -63,12 +57,12 @@ HY_PORT=${HY_PORT:-5667}
 read -p "Password auth (default: gstgg47e, tekan Enter untuk default): " AUTH_PASS
 if [ -z "$AUTH_PASS" ]; then
     AUTH_PASS="gstgg47e"
-    echo -e "\( {YELLOW}Menggunakan default auth password: gstgg47e \){NC}"
+    echo "Menggunakan default auth password: gstgg47e"
 else
-    echo -e "${YELLOW}Menggunakan auth password custom: \( AUTH_PASS \){NC}"
+    echo "Menggunakan auth password custom: $AUTH_PASS"
 fi
 
-read -p "Obfs salamander password (default: hu\`\`hqb\`c): " OBFS_PASS
+read -p "Obfs salamander password (default: hu``hqb`c): " OBFS_PASS
 OBFS_PASS=${OBFS_PASS:-hu``hqb`c}
 
 read -p "SNI / server_name (default: graph.facebook.com): " SNI
@@ -77,7 +71,7 @@ SNI=${SNI:-graph.facebook.com}
 read -p "Up / Down Mbps (default: 100): " MBPS
 MBPS=${MBPS:-100}
 
-# 5. Generate self-signed cert
+# Generate self-signed cert
 CERT_DIR="/etc/hysteria"
 mkdir -p "$CERT_DIR"
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -86,9 +80,9 @@ openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -subj "/CN=$SNI" 2>/dev/null
 
 chmod 600 "$CERT_DIR/server.key"
-echo -e "${GREEN}Self-signed cert dibuat (CN: \( SNI). \){NC}"
+echo "Self-signed cert dibuat (CN: $SNI)."
 
-# 6. Buat config Hysteria
+# Buat config Hysteria
 CONFIG_FILE="/etc/hysteria/config.yaml"
 
 cat > "$CONFIG_FILE" << EOF
@@ -121,9 +115,9 @@ log:
   level: info
 EOF
 
-echo -e "${GREEN}Config Hysteria dibuat di: \( CONFIG_FILE \){NC}"
+echo "Config Hysteria dibuat di: $CONFIG_FILE"
 
-# 7. Setup nftables persistent
+# Setup nftables
 INTERFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
 [ -z "$INTERFACE" ] && INTERFACE="eth0"
 
@@ -166,29 +160,26 @@ table ip nat {
 }
 EOF
 
-# Apply nftables
 nft -f "$NFT_CONF"
-
-# Enable persistent
 systemctl enable nftables
 systemctl restart nftables
 
-echo -e "${GREEN}nftables setup selesai (DNAT 3000-19999 → $HY_PORT via \( INTERFACE). \){NC}"
+echo "nftables setup selesai (DNAT 3000-19999 → $HY_PORT via $INTERFACE)."
 
-# 8. Restart & enable service
+# Restart & enable service
 systemctl daemon-reload
 systemctl restart hysteria-server
 systemctl enable hysteria-server --now
 
 sleep 3
 if systemctl is-active --quiet hysteria-server; then
-    echo -e "\( {GREEN}Hysteria 2 service aktif! \){NC}"
+    echo "Hysteria 2 service aktif!"
 else
-    echo -e "\( {RED}Service gagal start. Cek: journalctl -u hysteria-server -xe \){NC}"
+    echo "Service gagal start. Cek: journalctl -u hysteria-server -xe"
     exit 1
 fi
 
-# 9. Buat URI client
+# Buat URI client
 SERVER_IP=$(curl -s ifconfig.me || echo "your-server-ip")
 URI="hysteria2://\( {AUTH_PASS}@ \){SERVER_IP}:\( {HY_PORT}/?obfs=salamander&obfs-password= \){OBFS_PASS}&sni=${SNI}&insecure=1"
 
@@ -198,19 +189,19 @@ if [ -n "$DOMAIN" ]; then
 fi
 
 echo ""
-echo -e "\( {GREEN}=== Instalasi worryfree.sh Selesai! === \){NC}"
-echo -e "Server IP/Domain     : ${DOMAIN:-$SERVER_IP}"
-echo -e "Port internal        : $HY_PORT"
-echo -e "Range hopping client : 3000-19999"
-echo -e "Auth password        : $AUTH_PASS"
-echo -e "Obfs password        : $OBFS_PASS"
-echo -e "SNI                  : $SNI"
+echo "=== Instalasi worryfree.sh Selesai! ==="
+echo "Server IP/Domain     : ${DOMAIN:-$SERVER_IP}"
+echo "Port internal        : $HY_PORT"
+echo "Range hopping client : 3000-19999"
+echo "Auth password        : $AUTH_PASS"
+echo "Obfs password        : $OBFS_PASS"
+echo "SNI                  : $SNI"
 echo ""
-echo -e "\( {YELLOW}URI client (copy ke Hiddify/NekoBox): \){NC}"
+echo "URI client (copy ke Hiddify/NekoBox):"
 echo "$URI"
 echo ""
-echo -e "\( {YELLOW}Untuk full hopping: Ganti port di URI jadi :3000-19999 \){NC}"
-echo -e "Cek nftables     : sudo nft list ruleset"
-echo -e "Cek status       : sudo systemctl status hysteria-server"
-echo -e "Cek log          : journalctl -u hysteria-server -e -f"
-echo -e "\( {GREEN}Semua sudah bersih dan worryfree! Jalankan ulang kapan saja. \){NC}"
+echo "Untuk full hopping: Ganti port di URI jadi :3000-19999"
+echo "Cek nftables     : sudo nft list ruleset"
+echo "Cek status       : sudo systemctl status hysteria-server"
+echo "Cek log          : journalctl -u hysteria-server -e -f"
+echo "Semua sudah bersih dan worryfree!"
