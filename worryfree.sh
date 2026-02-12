@@ -34,6 +34,7 @@ rm -f /etc/systemd/system/hysteria-server.service 2>/dev/null || true
 
 # Cleanup iptables rules
 echo "Cleaning up old iptables rules..."
+
 # Detect interface
 INTERFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
 if [ -z "$INTERFACE" ]; then
@@ -47,10 +48,11 @@ fi
 iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 
-# Remove UFW rules - perbaikan untuk range port
-ufw delete allow 3000:19999/udp 2>/dev/null || true
-ufw delete allow 5667/udp 2>/dev/null || true
-ufw delete allow 6000:19999/udp 2>/dev/null || true
+# Disable UFW dulu untuk cleanup
+ufw --force disable 2>/dev/null || true
+
+# Reset UFW
+echo "y" | ufw reset 2>/dev/null || true
 
 echo "Cleanup completed."
 
@@ -158,27 +160,24 @@ fi
 # ==================== CONFIGURE UFW ====================
 echo "[10/16] Configuring UFW firewall..."
 
-# Reset UFW to default
-echo "y" | ufw reset
-
 # Set default policies
 ufw default deny incoming
 ufw default allow outgoing
 
-# Allow SSH (port 22)
-ufw allow 22/tcp comment 'SSH'
+# Allow SSH
+ufw allow 22/tcp
 
-# Allow Hysteria port
-ufw allow $HY_PORT/udp comment 'Hysteria main port'
+# Allow Hysteria main port
+ufw allow $HY_PORT/udp
 
-# Allow port hopping range - PERBAIKAN: gunakan format port:port
-ufw allow 3000:19999/udp comment 'Hysteria port hopping'
+# Allow port hopping range - PASTIKAN FORMATNYA BENAR
+ufw allow 3000:19999/udp
 
-# Enable UFW (non-interactive)
-echo "y" | ufw enable
+# Enable UFW - paksa dengan 'yes'
+ufw --force enable
 
-# Show UFW status
-ufw status verbose
+# Status UFW
+ufw status
 
 echo "UFW configured successfully."
 
@@ -188,11 +187,10 @@ echo "[11/16] Configuring iptables DNAT for port hopping..."
 # Hapus rule lama jika ada
 iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT 2>/dev/null || true
 
-# Add DNAT rule for port hopping range (3000-19999 ke port Hysteria)
+# Tambah rule DNAT
 iptables -t nat -A PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT
 
 # Enable IP forwarding
-echo "Enabling IP forwarding..."
 sysctl -w net.ipv4.ip_forward=1
 if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
@@ -239,9 +237,9 @@ fi
 read -p "Enter domain name (optional, press Enter to use IP $PUBLIC_IP): " DOMAIN
 SERVER_ADDR=${DOMAIN:-$PUBLIC_IP}
 
-# Simple URL encode for special characters
-OBFS_PASS_ENCODED=$(printf "%s" "$OBFS_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
-AUTH_PASS_ENCODED=$(printf "%s" "$AUTH_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
+# Simple URL encode
+OBFS_PASS_ENCODED=$(echo -n "$OBFS_PASS" | od -An -tx1 | tr ' ' % | tr -d '\n')
+AUTH_PASS_ENCODED=$(echo -n "$AUTH_PASS" | od -An -tx1 | tr ' ' % | tr -d '\n')
 
 # Generate URIs
 URI="hysteria2://$AUTH_PASS_ENCODED@$SERVER_ADDR:$HY_PORT?insecure=1&obfs=salamander&obfs-password=$OBFS_PASS_ENCODED&sni=$SNI"
@@ -252,14 +250,12 @@ echo "Client URI generated."
 # ==================== PERSISTENT IPTABLES ====================
 echo "[15/16] Making iptables rules persistent..."
 
-# Install iptables-persistent without prompt
-debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v4 boolean true"
-debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v6 boolean true"
-apt install -y iptables-persistent netfilter-persistent
+# Install iptables-persistent tanpa prompt
+DEBIAN_FRONTEND=noninteractive apt install -y iptables-persistent
 
 # Save iptables rules
-netfilter-persistent save
 iptables-save > /etc/iptables/rules.v4
+ip6tables-save > /etc/iptables/rules.v6
 
 echo "iptables rules saved."
 
@@ -282,7 +278,7 @@ echo ""
 echo "Firewall Status:"
 echo "  UFW: active"
 echo "  UFW rules:"
-ufw status numbered | grep -E "$HY_PORT|3000:19999|22" | head -3 | sed 's/^/    /'
+ufw status | grep -E "$HY_PORT|3000:19999|22" | sed 's/^/    /'
 echo ""
 echo "Port Hopping DNAT Rule:"
 echo "  iptables -t nat -A PREROUTING -i $INTERFACE -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT"
@@ -297,13 +293,11 @@ echo ""
 echo "Useful Commands:"
 echo "  Check Hysteria status: systemctl status hysteria-server"
 echo "  View Hysteria logs: journalctl -u hysteria-server -f -n 50"
-echo "  Check UFW status: ufw status numbered"
+echo "  Check UFW status: ufw status"
 echo "  Check DNAT rules: iptables -t nat -L PREROUTING -v"
 echo "  Edit config: nano /etc/hysteria/config.yaml"
 echo "  Restart Hysteria: systemctl restart hysteria-server"
 echo ""
-echo "Port hopping: Clients can use ANY port between 3000-19999"
-echo "All UDP traffic to ports 3000-19999 will be forwarded to Hysteria port $HY_PORT"
 echo "================================================"
 
 # ==================== TEST CONNECTION ====================
