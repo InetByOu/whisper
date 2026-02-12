@@ -1,5 +1,6 @@
 #!/bin/bash
 # worryfree.sh - One-click Hysteria 2 installer for Ubuntu 24.04 with port hopping
+# Menggunakan UFW + iptables DNAT untuk port hopping
 # No colors, plain text output
 
 set -e
@@ -31,19 +32,25 @@ rm -f /usr/local/bin/hysteria 2>/dev/null || true
 # Remove systemd service file
 rm -f /etc/systemd/system/hysteria-server.service 2>/dev/null || true
 
-# Remove nftables config
-rm -f /etc/nftables.conf 2>/dev/null || true
-
-# Flush nftables ruleset
-if command -v nft >/dev/null 2>&1; then
-    echo "Flushing nftables ruleset..."
-    nft flush ruleset 2>/dev/null || true
+# Cleanup iptables rules
+echo "Cleaning up old iptables rules..."
+# Detect interface
+INTERFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+if [ -z "$INTERFACE" ]; then
+    INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+fi
+if [ -z "$INTERFACE" ]; then
+    INTERFACE="eth0"
 fi
 
-# Restart nftables service if exists
-if systemctl list-unit-files 2>/dev/null | grep -q nftables; then
-    systemctl restart nftables 2>/dev/null || true
-fi
+# Remove existing DNAT rules
+iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$INTERFACE" -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
+
+# Remove UFW rules
+ufw delete allow 3000:19999/udp 2>/dev/null || true
+ufw delete allow 5667/udp 2>/dev/null || true
+ufw delete allow 6000:19999/udp 2>/dev/null || true
 
 echo "Cleanup completed."
 
@@ -56,7 +63,7 @@ echo "System update completed."
 
 # ==================== DEPENDENCIES ====================
 echo "[4/16] Installing dependencies..."
-apt install -y curl wget openssl nftables jq net-tools ca-certificates
+apt install -y curl wget openssl jq net-tools ca-certificates ufw iptables
 echo "Dependencies installed."
 
 # ==================== INSTALL HYSTERIA 2 ====================
@@ -137,7 +144,10 @@ echo "Configuration file created at /etc/hysteria/config.yaml"
 
 # ==================== DETECT INTERFACE ====================
 echo "[9/16] Detecting main network interface..."
-INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+INTERFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+if [ -z "$INTERFACE" ]; then
+    INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+fi
 if [ -z "$INTERFACE" ]; then
     INTERFACE="eth0"
     echo "Warning: Could not detect default interface, using $INTERFACE"
@@ -145,80 +155,56 @@ else
     echo "Detected main interface: $INTERFACE"
 fi
 
-# ==================== CREATE NFTABLES.CONF ====================
-echo "[10/16] Creating nftables configuration..."
-cat > /etc/nftables.conf <<EOF
-#!/usr/sbin/nft -f
+# ==================== CONFIGURE UFW ====================
+echo "[10/16] Configuring UFW firewall..."
 
-flush ruleset
+# Enable UFW if not already enabled
+if ! ufw status | grep -q "Status: active"; then
+    echo "y" | ufw enable
+fi
 
-table inet filter {
-    chain input {
-        type filter hook input priority filter; policy drop;
-        
-        # Allow established/related connections
-        ct state established,related accept
-        
-        # Allow loopback
-        iif lo accept
-        
-        # Allow SSH (port 22)
-        tcp dport 22 accept
-        
-        # Allow Hysteria port
-        udp dport $HY_PORT accept
-        
-        # Allow port hopping range
-        udp dport 3000-19999 accept
-    }
-    
-    chain forward {
-        type filter hook forward priority filter; policy drop;
-    }
-    
-    chain output {
-        type filter hook output priority filter; policy accept;
-    }
-}
+# Set default policies
+ufw default deny incoming
+ufw default allow outgoing
 
-table ip nat {
-    chain prerouting {
-        type nat hook prerouting priority dstnat; policy accept;
-        
-        # DNAT port hopping range to Hysteria port
-        udp dport 3000-19999 dnat to :$HY_PORT
-    }
-    
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        
-        # Masquerade for outgoing traffic
-        oif "$INTERFACE" masquerade
-    }
-}
-EOF
-echo "nftables configuration created at /etc/nftables.conf"
+# Allow SSH (port 22)
+ufw allow 22/tcp comment 'SSH'
 
-# ==================== APPLY NFTABLES ====================
-echo "[11/16] Applying nftables rules..."
-nft -f /etc/nftables.conf || { echo "Error: Failed to apply nftables rules. Check /etc/nftables.conf for syntax errors."; exit 1; }
-echo "nftables rules applied successfully."
+# Allow Hysteria port
+ufw allow $HY_PORT/udp comment 'Hysteria main port'
 
-# ==================== ENABLE NFTABLES ====================
-echo "[12/16] Enabling and restarting nftables service..."
-systemctl enable nftables
-systemctl restart nftables
-echo "nftables service enabled and restarted."
+# Allow port hopping range (3000-19999)
+ufw allow 3000:19999/udp comment 'Hysteria port hopping'
+
+# Reload UFW
+ufw reload
+
+echo "UFW configured successfully."
+
+# ==================== CONFIGURE IPTABLES DNAT ====================
+echo "[11/16] Configuring iptables DNAT for port hopping..."
+
+# Add DNAT rule for port hopping range (3000-19999 ke port Hysteria)
+iptables -t nat -A PREROUTING -i "$INTERFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT
+
+# Enable IP forwarding
+echo "Enabling IP forwarding..."
+sysctl -w net.ipv4.ip_forward=1
+if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+fi
+
+echo "iptables DNAT rule added: UDP 3000-19999 -> :$HY_PORT"
 
 # ==================== ENABLE HYSTERIA SERVICE ====================
-echo "[13/16] Enabling and starting Hysteria service..."
+echo "[12/16] Enabling and starting Hysteria service..."
 systemctl daemon-reload
 systemctl enable hysteria-server
 systemctl restart hysteria-server
 echo "Hysteria service enabled and restarted."
 
 # ==================== CHECK SERVICE STATUS ====================
-echo "[14/16] Checking Hysteria service status..."
+echo "[13/16] Checking Hysteria service status..."
 if systemctl is-active --quiet hysteria-server; then
     echo "Hysteria service is active and running."
 else
@@ -227,7 +213,7 @@ else
 fi
 
 # ==================== GENERATE CLIENT URI ====================
-echo "[15/16] Generating client connection URI..."
+echo "[14/16] Generating client connection URI..."
 
 # Get public IP
 PUBLIC_IP=$(curl -s --connect-timeout 5 ifconfig.me || true)
@@ -249,34 +235,29 @@ fi
 read -p "Enter domain name (optional, press Enter to use IP $PUBLIC_IP): " DOMAIN
 SERVER_ADDR=${DOMAIN:-$PUBLIC_IP}
 
-# Generate URI (URL encode obfs password)
-OBFS_PASS_ENCODED=$(printf "%s" "$OBFS_PASS" | jq -sRr @uri)
-AUTH_PASS_ENCODED=$(printf "%s" "$AUTH_PASS" | jq -sRr @uri)
+# URL encode password for URI
+OBFS_PASS_ENCODED=$(printf "%s" "$OBFS_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
+AUTH_PASS_ENCODED=$(printf "%s" "$AUTH_PASS" | sed 's/`/%60/g; s/\\/%5C/g; s/\//%2F/g; s/:/%3A/g; s/@/%40/g; s/?/%3F/g; s/=/%3D/g; s/&/%26/g')
 
+# Generate URIs
 URI="hysteria2://$AUTH_PASS_ENCODED@$SERVER_ADDR:$HY_PORT?insecure=1&obfs=salamander&obfs-password=$OBFS_PASS_ENCODED&sni=$SNI"
 URI_HOPPING="hysteria2://$AUTH_PASS_ENCODED@$SERVER_ADDR:3000-19999?insecure=1&obfs=salamander&obfs-password=$OBFS_PASS_ENCODED&sni=$SNI"
 
 echo "Client URI generated."
 
-# ==================== VALIDATE CONFIGURATION ====================
-echo "[16/16] Validating installation..."
+# ==================== PERSISTENT IPTABLES ====================
+echo "[15/16] Making iptables rules persistent..."
 
-# Test Hysteria config
-if /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml --disable-update-check --log-level error --test-only 2>/dev/null; then
-    echo "Hysteria configuration is valid."
-else
-    echo "Warning: Hysteria configuration test failed. Please check /etc/hysteria/config.yaml"
-fi
+# Install iptables-persistent without prompt
+apt install -y iptables-persistent netfilter-persistent
 
-# Test nftables rules
-if nft list table ip nat >/dev/null 2>&1; then
-    echo "nftables NAT rules are active."
-else
-    echo "Warning: nftables NAT table not found. Rules may not be applied correctly."
-fi
+# Save iptables rules
+netfilter-persistent save
+
+echo "iptables rules saved."
 
 # ==================== SUMMARY ====================
-echo ""
+echo "[16/16] Installation Summary"
 echo "================================================"
 echo "Hysteria 2 has been successfully installed!"
 echo "================================================"
@@ -291,6 +272,14 @@ echo "  Obfuscation password: $OBFS_PASS"
 echo "  SNI: $SNI"
 echo "  Bandwidth: $BANDWIDTH Mbps"
 echo ""
+echo "Firewall Status:"
+echo "  UFW: active"
+echo "  UFW rules:"
+ufw status numbered | grep -E "$HY_PORT|3000-19999|22" | sed 's/^/    /'
+echo ""
+echo "Port Hopping DNAT Rule:"
+echo "  iptables -t nat -A PREROUTING -i $INTERFACE -p udp --dport 3000:19999 -j DNAT --to-destination :$HY_PORT"
+echo ""
 echo "Client Connection URIs:"
 echo "  Standard port:"
 echo "  $URI"
@@ -299,24 +288,20 @@ echo "  Port hopping (recommended - use any port from 3000-19999):"
 echo "  $URI_HOPPING"
 echo ""
 echo "Useful Commands:"
-echo "  Check nftables rules: nft list ruleset"
 echo "  Check Hysteria status: systemctl status hysteria-server"
 echo "  View Hysteria logs: journalctl -u hysteria-server -f -n 50"
+echo "  Check UFW status: ufw status numbered"
+echo "  Check DNAT rules: iptables -t nat -L PREROUTING -v"
 echo "  Edit config: nano /etc/hysteria/config.yaml"
 echo "  Restart Hysteria: systemctl restart hysteria-server"
-echo "  Test Hysteria config: /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml --test-only"
 echo ""
-echo "Port hopping: Clients can use any port between 3000-19999"
-echo "All ports in this range will be redirected to your Hysteria port $HY_PORT"
-echo ""
-echo "Installation directory: /etc/hysteria/"
-echo "Config file: /etc/hysteria/config.yaml"
-echo "Certificate: /etc/hysteria/server.crt"
+echo "Port hopping: Clients can use ANY port between 3000-19999"
+echo "All UDP traffic to ports 3000-19999 will be forwarded to Hysteria port $HY_PORT"
 echo "================================================"
 
 # ==================== TEST CONNECTION ====================
 echo ""
-echo "Quick test: Checking if Hysteria port is open..."
+echo "Quick test: Checking if Hysteria port is listening..."
 if command -v ss >/dev/null 2>&1; then
     if ss -uln | grep -q ":$HY_PORT "; then
         echo "✓ Port $HY_PORT is listening (UDP)"
