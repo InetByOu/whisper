@@ -1,64 +1,87 @@
 #!/bin/bash
-# update-hysteria2.sh - Hysteria 2 updater (selalu ganti yang lama dengan baru)
-# Inspired by Zivpn UDP installer style
-# Selalu overwrite: binary, cert, config, service file
+# update-hysteria2.sh - Hysteria 2 full overwrite updater & fixer
+# Selalu ganti file lama dengan yang baru (binary, cert, config, service)
+# Professional style: jeda tepat, error handling, clean output
 
-echo "Updating Hysteria 2 server (overwrite all existing files)..."
+set -e
+
+echo "Starting Hysteria 2 full update (overwrite mode)..."
 
 # 1. Update sistem
-sudo apt-get update && sudo apt-get upgrade -y
+echo "[1/10] Updating system packages..."
+sudo apt-get update -y >/dev/null 2>&1
+sudo apt-get upgrade -y >/dev/null 2>&1
+echo "System updated."
+
+sleep 1  # jeda kecil agar output tidak bertabrakan
 
 # 2. Stop & disable service lama
-systemctl stop hysteria-server 1> /dev/null 2> /dev/null
-systemctl disable hysteria-server 1> /dev/null 2> /dev/null
+echo "[2/10] Stopping existing Hysteria service..."
+systemctl stop hysteria-server >/dev/null 2>&1 || true
+systemctl disable hysteria-server >/dev/null 2>&1 || true
 
-# 3. Hapus file lama sepenuhnya
+# 3. Hapus semua file lama
+echo "[3/10] Removing old files..."
 rm -f /usr/local/bin/hysteria
 rm -rf /etc/hysteria
 rm -f /etc/systemd/system/hysteria-server.service
 
-# Flush nftables & iptables lama
-nft flush ruleset 2>/dev/null || true
-iptables -t nat -F 2>/dev/null || true
+# Flush rules firewall lama
+nft flush ruleset >/dev/null 2>&1 || true
+iptables -t nat -F >/dev/null 2>&1 || true
 
-echo "All old files removed. Starting fresh install/update..."
+echo "Old files removed."
 
-# 4. Download Hysteria 2 binary terbaru (overwrite)
-echo "Downloading latest Hysteria 2 binary..."
-wget https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -O /usr/local/bin/hysteria
+sleep 1
+
+# 4. Download binary Hysteria 2 terbaru
+echo "[4/10] Downloading latest Hysteria 2 binary..."
+wget -q --show-progress https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -O /usr/local/bin/hysteria
 chmod +x /usr/local/bin/hysteria
+
+echo "Binary updated."
+
+sleep 2  # jeda setelah download besar
 
 # 5. Buat folder config baru
 mkdir -p /etc/hysteria
 
 # 6. Generate certificate baru (overwrite)
-echo "Generating new self-signed certificate..."
+echo "[5/10] Generating new self-signed certificate..."
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -keyout /etc/hysteria/server.key \
     -out /etc/hysteria/server.crt \
-    -subj "/CN=graph.facebook.com"
+    -subj "/CN=graph.facebook.com" >/dev/null 2>&1
+
 chmod 644 /etc/hysteria/server.crt
 chmod 644 /etc/hysteria/server.key
 chown root:root /etc/hysteria/*
 
-# 7. Prompt konfigurasi (seperti contoh Zivpn)
-echo ""
-echo "Hysteria 2 Configuration"
+echo "New certificate generated."
+
+sleep 2
+
+# 7. Prompt konfigurasi (aman, tanpa backtick di default)
+echo "[6/10] Hysteria 2 Configuration"
 DEFAULT_AUTH="gstgg47e"
-DEFAULT_OBFS="hu``hqb`c"
+DEFAULT_OBFS="huhqb_c"   # diubah dari backtick agar aman di Bash
 DEFAULT_BW="100"
 
-read -p "Enter authentication password [default: $DEFAULT_AUTH]: " AUTH_PASS
+read -p "Auth password [default: $DEFAULT_AUTH]: " AUTH_PASS
 AUTH_PASS=${AUTH_PASS:-$DEFAULT_AUTH}
 
-read -p "Enter obfuscation password (salamander) [default: $DEFAULT_OBFS]: " OBFS_PASS
+read -p "Obfs salamander password [default: $DEFAULT_OBFS]: " OBFS_PASS
 OBFS_PASS=${OBFS_PASS:-$DEFAULT_OBFS}
 
-read -p "Enter bandwidth up/down Mbps [default: $DEFAULT_BW]: " BANDWIDTH
+read -p "Bandwidth up/down Mbps [default: $DEFAULT_BW]: " BANDWIDTH
 BANDWIDTH=${BANDWIDTH:-$DEFAULT_BW}
 
+echo "Configuration received."
+
+sleep 1
+
 # 8. Buat config.yaml baru (overwrite)
-echo "Creating new config.yaml..."
+echo "[7/10] Creating new config.yaml..."
 cat > /etc/hysteria/config.yaml <<EOF
 listen: :5667
 
@@ -89,8 +112,12 @@ log:
   level: info
 EOF
 
+echo "Config created."
+
+sleep 1
+
 # 9. Buat systemd service baru (overwrite)
-echo "Creating new systemd service file..."
+echo "[8/10] Creating new systemd service..."
 cat <<EOF > /etc/systemd/system/hysteria-server.service
 [Unit]
 Description=Hysteria 2 Server
@@ -111,46 +138,46 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
 
-# 10. Set capability & fix permission binary
-setcap cap_net_bind_service=+ep /usr/local/bin/hysteria 2>/dev/null || true
-
-# 11. Reload systemd & start service
+# 10. Set capability & reload
+setcap cap_net_bind_service=+ep /usr/local/bin/hysteria >/dev/null 2>&1 || true
 systemctl daemon-reload
-systemctl enable hysteria-server
-systemctl start hysteria-server
 
-sleep 5
+# 11. Start & enable service
+echo "[9/10] Starting Hysteria 2 service..."
+systemctl enable hysteria-server >/dev/null 2>&1
+systemctl restart hysteria-server
 
-# 12. Re-apply DNAT (overwrite rule lama)
+sleep 5   # jeda penting agar service benar-benar start
+
+# 12. Re-apply DNAT & firewall
+echo "[10/10] Applying DNAT & firewall rules..."
 IFACE=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
 [ -z "$IFACE" ] && IFACE="eth0"
 
 iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 3000:19999 -j DNAT --to-destination :5667
 
-# UFW allow (jika masih pakai ufw)
-ufw allow 5667/udp 2>/dev/null || true
-ufw allow 3000:19999/udp 2>/dev/null || true
-ufw reload 2>/dev/null || true
+ufw allow 5667/udp >/dev/null 2>&1 || true
+ufw allow 3000:19999/udp >/dev/null 2>&1 || true
+ufw reload >/dev/null 2>&1 || true
 
-# 13. Cek status & log
+# 13. Cek hasil
 echo ""
-echo "=== Hysteria 2 status setelah update ==="
+echo "=== Hysteria 2 update completed ==="
 systemctl status hysteria-server -l
 
 echo ""
-echo "=== Log terakhir ==="
+echo "Last 20 log lines:"
 journalctl -u hysteria-server -n 20 --no-pager
 
 echo ""
-echo "Hysteria 2 telah di-update sepenuhnya dengan file baru!"
-echo "Server address: $(curl -s ifconfig.me)"
-echo "Port internal: 5667"
+echo "Server IP: $(curl -s ifconfig.me)"
+echo "Internal port: 5667"
 echo "Hopping range: 3000-19999"
 echo "Auth: $AUTH_PASS"
 echo "Obfs: $OBFS_PASS"
 echo ""
-echo "URI contoh (hopping): hysteria2://$AUTH_PASS@YOUR_IP:3000-19999/?obfs=salamander&obfs-password=$OBFS_PASS&sni=graph.facebook.com&insecure=1"
+echo "URI hopping example:"
+echo "hysteria2://\( AUTH_PASS@ \)(curl -s ifconfig.me):3000-19999/?obfs=salamander&obfs-password=$OBFS_PASS&sni=graph.facebook.com&insecure=1"
 echo ""
-echo "Jika masih error, jalankan manual: sudo /usr/local/bin/hysteria server -c /etc/hysteria/config.yaml"
-echo "Update selesai!"
+echo "Done! If service still failed, paste the status output above."
